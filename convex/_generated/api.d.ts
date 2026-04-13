@@ -10,6 +10,7 @@
 
 import type * as athletes from "../athletes.js";
 import type * as importData from "../importData.js";
+import type * as meets from "../meets.js";
 import type * as mutations from "../mutations.js";
 import type * as relayMutations from "../relayMutations.js";
 import type * as relays from "../relays.js";
@@ -24,6 +25,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   athletes: typeof athletes;
   importData: typeof importData;
+  meets: typeof meets;
   mutations: typeof mutations;
   relayMutations: typeof relayMutations;
   relays: typeof relays;

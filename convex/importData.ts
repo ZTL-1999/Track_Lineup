@@ -1,5 +1,17 @@
-import { mutation } from "./_generated/server";
+import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
+
+export const listRelayTimes = query({
+  args: { event: v.string() },
+  handler: async (ctx, args) => {
+    const times = await ctx.db
+      .query("relayTimes")
+      .withIndex("by_event", (q) => q.eq("event", args.event))
+      .collect();
+    times.sort((a, b) => a.time - b.time);
+    return times;
+  },
+});
 
 // Upsert a single athlete + all their times for a team.
 // Called once per athlete by the import script.
@@ -85,6 +97,45 @@ export const clearTeam = mutation({
       }
       // Delete athlete
       await ctx.db.delete(athlete._id);
+    }
+
+    // Delete relay times for this team
+    const relayTimes = await ctx.db
+      .query("relayTimes")
+      .withIndex("by_team", (q) => q.eq("team", args.team))
+      .collect();
+    for (const rt of relayTimes) {
+      await ctx.db.delete(rt._id);
+    }
+  },
+});
+
+// Upsert a relay time for a team
+export const upsertRelayTime = mutation({
+  args: {
+    team: v.string(),
+    event: v.string(),
+    time: v.number(),
+    athletes: v.array(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const existing = await ctx.db
+      .query("relayTimes")
+      .withIndex("by_team", (q) => q.eq("team", args.team))
+      .collect();
+    const match = existing.find((r) => r.event === args.event);
+    if (match) {
+      // Only update if this is faster
+      if (args.time < match.time) {
+        await ctx.db.patch(match._id, { time: args.time, athletes: args.athletes });
+      }
+    } else {
+      await ctx.db.insert("relayTimes", {
+        team: args.team,
+        event: args.event,
+        time: args.time,
+        athletes: args.athletes,
+      });
     }
   },
 });

@@ -172,7 +172,7 @@ export const teams = [
   },
   {
     slug: "northscotteldridge",
-    name: "North Scott Lady Lancers",
+    name: "North Scott Lancers",
     url: "https://www.gobound.com/ia/ighsau/girlstrack/2025-26/northscotteldridge/v/stats?competitor=athlete&range=season&block=total",
   },
   {

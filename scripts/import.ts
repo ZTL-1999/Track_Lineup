@@ -12,7 +12,14 @@ const EVENT_MAP: Record<string, string> = {
   "3000 Meter Run": "3000 Meters",
   "100 Meter Hurdles": "100 Meter Hurdles",
   "400 Meter Hurdles": "400 Meter Hurdles",
+  "Long Jump": "Long Jump",
+  "High Jump": "High Jump",
+  "Shot Put": "Shot Put",
+  "Discus": "Discus Throw",
 };
+
+// Field events store marks in meters (converted from inches)
+const FIELD_EVENTS = new Set(["Long Jump", "High Jump", "Shot Put", "Discus"]);
 
 // Grade abbreviation mapping
 const GRADE_MAP: Record<string, string> = {
@@ -43,20 +50,36 @@ interface AthleteData {
   times: { event: string; time: number }[];
 }
 
+interface RelayData {
+  event: string;
+  time: number;
+  athletes: string[];
+}
+
+// Relay event name mapping: gobound heading → our DB event name
+const RELAY_EVENT_MAP: Record<string, string> = {
+  "4x100 Meter Relay": "4x100 Meter Relay",
+  "4x200 Meter Relay": "4x200 Meter Relay",
+  "4x400 Meter Relay": "4x400 Meter Relay",
+  "4x800 Meter Relay": "4x800 Meter Relay",
+  "800 Medley Relay": "Sprint Medley Relay",
+  "1600 Medley Relay": "Distance Medley Relay",
+  "4x100 Meter Shuttle Hurdle Relay": "Shuttle Hurdle Relay",
+};
+
 async function scrapeTeam(url: string): Promise<AthleteData[]> {
   console.log(`  Fetching ${url}...`);
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      "Accept":
-        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-      "Accept-Language": "en-US,en;q=0.5",
-      "Sec-Fetch-Dest": "document",
-      "Sec-Fetch-Mode": "navigate",
-      "Sec-Fetch-Site": "none",
-    },
-  });
+  const fetchHeaders = {
+    "User-Agent":
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept":
+      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+  };
+  const response = await fetch(url, { headers: fetchHeaders });
 
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -108,7 +131,14 @@ async function scrapeTeam(url: string): Promise<AthleteData[]> {
         name = nameCell.replace(/\s+/g, " ");
       }
 
-      const time = parseTime(timeText);
+      let time: number | null;
+      if (FIELD_EVENTS.has(eventTitle)) {
+        // Field event: sort value is inches, convert to meters
+        const inches = parseFloat(timeText);
+        time = !isNaN(inches) && inches > 0 ? inches * 0.0254 : null;
+      } else {
+        time = parseTime(timeText);
+      }
       if (time === null) return;
 
       if (!athleteMap.has(name)) {
@@ -122,7 +152,97 @@ async function scrapeTeam(url: string): Promise<AthleteData[]> {
     });
   });
 
+  // Also scrape the roster page to pick up athletes who only ran relays
+  const rosterUrl = url.replace(/\/stats\?.*$/, "/roster");
+  console.log(`  Fetching roster ${rosterUrl}...`);
+  try {
+    const rosterResp = await fetch(rosterUrl, { headers: fetchHeaders });
+    if (rosterResp.ok) {
+      const rosterHtml = await rosterResp.text();
+      const $r = cheerio.load(rosterHtml);
+      $r("table tr").each((_, row) => {
+        const cells = $r(row).find("td");
+        if (cells.length < 2) return;
+        const nameText = $r(cells[0]).text().trim().replace(/\s+/g, " ");
+        const gradeText = $r(cells[1]).text().trim();
+        if (!nameText) return;
+        const grade = GRADE_MAP[gradeText];
+        if (!athleteMap.has(nameText)) {
+          athleteMap.set(nameText, { name: nameText, grade, times: [] });
+        } else if (grade && !athleteMap.get(nameText)!.grade) {
+          athleteMap.get(nameText)!.grade = grade;
+        }
+      });
+    }
+  } catch (e) {
+    console.log(`  Warning: Could not fetch roster page`);
+  }
+
   return Array.from(athleteMap.values());
+}
+
+async function scrapeRelays(url: string): Promise<RelayData[]> {
+  // Switch from individual stats to team/relay stats
+  const relayUrl = url.replace("competitor=athlete", "competitor=team");
+  console.log(`  Fetching relays ${relayUrl}...`);
+  const fetchHeaders = {
+    "User-Agent":
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept":
+      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+  };
+
+  try {
+    const resp = await fetch(relayUrl, { headers: fetchHeaders });
+    if (!resp.ok) return [];
+    const html = await resp.text();
+    const $ = cheerio.load(html);
+
+    const relays: RelayData[] = [];
+
+    $("h4").each((_, heading) => {
+      const title = $(heading).text().trim();
+      const dbEvent = RELAY_EVENT_MAP[title];
+      if (!dbEvent) return;
+
+      const card = $(heading).closest(".card");
+      const table = card.find("table").first();
+      if (!table.length) return;
+
+      // Take only the first data row (skip header row with th)
+      let foundRow = false;
+      table.find("tr").each((_, row) => {
+        if (foundRow) return;
+        const cells = $(row).find("td");
+        if (cells.length < 3) return;
+
+        foundRow = true;
+
+        // Cell 1: athlete names (comma-separated)
+        const athleteText = $(cells[1]).text().trim();
+        const athletes = athleteText.split(",").map((n) => n.trim().replace(/\s+/g, " ")).filter(Boolean);
+
+        // Cell 2: time
+        const timeCell = $(cells[2]);
+        const sortValue = timeCell.attr("data-sort-value");
+        const timeText = sortValue || timeCell.text().trim();
+        const time = parseTime(timeText);
+
+        if (time && athletes.length > 0) {
+          relays.push({ event: dbEvent, time, athletes });
+        }
+      });
+    });
+
+    return relays;
+  } catch (e) {
+    console.log(`  Warning: Could not fetch relay page`);
+    return [];
+  }
 }
 
 async function main() {
@@ -203,6 +323,20 @@ async function main() {
       console.log(
         `  ✅ Imported ${athletes.length} athletes with ${totalTimes} times`
       );
+
+      // Scrape relay times
+      const relays = await scrapeRelays(team.url);
+      for (const relay of relays) {
+        await client.mutation("importData:upsertRelayTime" as any, {
+          team: team.slug,
+          event: relay.event,
+          time: relay.time,
+          athletes: relay.athletes,
+        });
+      }
+      if (relays.length > 0) {
+        console.log(`  ✅ Imported ${relays.length} relay times`);
+      }
     } catch (err) {
       console.error(`  ❌ Failed to import ${team.name}:`, err);
     }
