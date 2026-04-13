@@ -1,0 +1,25 @@
+name: Daily Times Import
+
+on:
+  schedule:
+    # Runs at 6:00 AM Central Time (11:00 UTC) every day
+    - cron: "0 11 * * *"
+  workflow_dispatch: # allows manual trigger from GitHub UI
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run import (update times, no clear)
+        env:
+          CONVEX_URL: ${{ secrets.CONVEX_URL }}
+        run: npx tsx scripts/import.ts
