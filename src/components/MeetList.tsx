@@ -8,11 +8,15 @@ export function MeetList() {
   const meets = useQuery(api.meets.list) ?? [];
   const createMeet = useMutation(api.meets.create);
   const deleteMeet = useMutation(api.meets.deleteMeet);
+  const updateMeet = useMutation(api.meets.updateMeet);
 
   const [name, setName] = useState("");
   const [date, setDate] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [activeMeetId, setActiveMeetId] = useState<GenericId<"meets"> | null>(null);
+  const [editingMeetId, setEditingMeetId] = useState<GenericId<"meets"> | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editDate, setEditDate] = useState("");
 
   if (activeMeetId) {
     return <MeetDetail meetId={activeMeetId} onBack={() => setActiveMeetId(null)} />;
@@ -72,6 +76,35 @@ export function MeetList() {
       <div className="meet-cards">
         {meets.map((meet) => (
           <div key={meet._id} className="meet-card card">
+            {editingMeetId === meet._id ? (
+              <div className="meet-edit-form">
+                <input
+                  className="meet-edit-input"
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  autoFocus
+                />
+                <input
+                  className="meet-edit-input"
+                  type="date"
+                  value={editDate}
+                  onChange={(e) => setEditDate(e.target.value)}
+                />
+                <div className="meet-edit-actions">
+                  <button
+                    className="btn-primary btn-sm"
+                    disabled={!editName.trim()}
+                    onClick={async () => {
+                      await updateMeet({ meetId: meet._id, name: editName.trim(), date: editDate || undefined });
+                      setEditingMeetId(null);
+                    }}
+                  >Save</button>
+                  <button className="btn-secondary btn-sm" onClick={() => setEditingMeetId(null)}>Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <>
             <div className="meet-card-info">
               <span className="meet-card-name">{meet.name}</span>
               {meet.date && <span className="meet-card-date">{meet.date}</span>}
@@ -87,6 +120,16 @@ export function MeetList() {
                 Open
               </button>
               <button
+                className="btn-secondary"
+                onClick={() => {
+                  setEditingMeetId(meet._id as GenericId<"meets">);
+                  setEditName(meet.name);
+                  setEditDate(meet.date ?? "");
+                }}
+              >
+                Edit
+              </button>
+              <button
                 className="btn-danger"
                 onClick={() => {
                   if (confirm(`Delete "${meet.name}"?`)) {
@@ -97,6 +140,8 @@ export function MeetList() {
                 Delete
               </button>
             </div>
+              </>
+            )}
           </div>
         ))}
       </div>

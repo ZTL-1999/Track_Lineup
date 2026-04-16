@@ -1024,6 +1024,13 @@ export const create = mutation({
   },
 });
 
+export const updateMeet = mutation({
+  args: { meetId: v.id("meets"), name: v.string(), date: v.optional(v.string()) },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.meetId, { name: args.name, date: args.date });
+  },
+});
+
 export const addTeam = mutation({
   args: { meetId: v.id("meets"), teamSlug: v.string() },
   handler: async (ctx, args) => {

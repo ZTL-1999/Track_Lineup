@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { useQuery } from "convex/react";
+import { useQuery, useMutation } from "convex/react";
 import { api } from "../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import { AddAthlete } from "./components/AddAthlete";
@@ -19,6 +19,10 @@ function App() {
     useState<GenericId<"athletes"> | null>(null);
   const [teamSearch, setTeamSearch] = useState("");
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [addingTeam, setAddingTeam] = useState(false);
+  const [newTeamName, setNewTeamName] = useState("");
+  const [newTeamUrl, setNewTeamUrl] = useState("");
+  const upsertTeam = useMutation(api.teams.upsert);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const teams = useQuery(api.teams.list) ?? [];
   const athletes = useQuery(api.athletes.listWithTimes, { team: selectedTeam }) ?? [];
@@ -87,6 +91,42 @@ function App() {
                     </li>
                   ))}
                 </ul>
+                {!addingTeam ? (
+                  <button className="btn-add-team-inline" onClick={() => setAddingTeam(true)}>+ Add team</button>
+                ) : (
+                  <div className="add-team-form">
+                    <input
+                      className="team-search-input"
+                      type="text"
+                      placeholder="Team name"
+                      value={newTeamName}
+                      onChange={(e) => setNewTeamName(e.target.value)}
+                    />
+                    <input
+                      className="team-search-input"
+                      type="text"
+                      placeholder="Gobound URL (optional)"
+                      value={newTeamUrl}
+                      onChange={(e) => setNewTeamUrl(e.target.value)}
+                    />
+                    <div className="add-team-form-actions">
+                      <button
+                        className="btn-primary btn-sm"
+                        disabled={!newTeamName.trim()}
+                        onClick={async () => {
+                          const slug = newTeamName.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+                          await upsertTeam({ slug, name: newTeamName.trim(), url: newTeamUrl.trim() });
+                          setSelectedTeam(slug);
+                          setNewTeamName("");
+                          setNewTeamUrl("");
+                          setAddingTeam(false);
+                          setDropdownOpen(false);
+                        }}
+                      >Save</button>
+                      <button className="btn-secondary btn-sm" onClick={() => { setAddingTeam(false); setNewTeamName(""); setNewTeamUrl(""); }}>Cancel</button>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
