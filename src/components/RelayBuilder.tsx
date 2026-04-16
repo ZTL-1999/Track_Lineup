@@ -21,7 +21,7 @@ interface RelayBuilderProps {
 }
 
 export function RelayBuilder({ athletes }: RelayBuilderProps) {
-  const [selectedRelay, setSelectedRelay] = useState(RELAY_EVENTS[0]);
+  const [selectedRelay, setSelectedRelay] = useState<string>(RELAY_EVENTS[0]);
   const assignments = useQuery(api.relays.getAssignments, {
     relayEvent: selectedRelay,
   });
