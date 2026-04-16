@@ -1,4 +1,5 @@
-import { mutation, query } from "./_generated/server";
+import { mutation, query, action } from "./_generated/server";
+import { api } from "./_generated/api";
 import { v } from "convex/values";
 
 // ---------------------------------------------------------------------------
@@ -360,6 +361,91 @@ export const relayRankings = query({
     }
 
     return rows.slice(0, 8);
+  },
+});
+
+// Returns top-8 rankings for ALL individual, field, and relay events in one query.
+// Use this instead of calling eventRankings/relayRankings 20 times separately.
+const ALL_INDIVIDUAL_EVENTS = [
+  "100 Meters", "200 Meters", "400 Meters", "800 Meters",
+  "1500 Meters", "3000 Meters", "100 Meter Hurdles", "400 Meter Hurdles",
+  "High Jump", "Long Jump", "Shot Put", "Discus Throw",
+];
+const ALL_RELAY_EVENTS = [
+  "4x100 Meter Relay", "4x200 Meter Relay", "4x400 Meter Relay", "4x800 Meter Relay",
+  "Sprint Medley Relay", "Distance Medley Relay", "Shuttle Hurdle Relay",
+];
+
+export const allRankings = query({
+  args: { meetId: v.optional(v.id("meets")) },
+  handler: async (ctx, args) => {
+    const teams = await ctx.db.query("teams").collect();
+    const teamNameMap = new Map<string, string>();
+    for (const t of teams) {
+      const words = t.name.split(" ");
+      teamNameMap.set(t.slug, words.length > 1 ? words.slice(0, -1).join(" ") : t.name);
+    }
+
+    const result: Record<string, any[]> = {};
+
+    // ---- Individual + field events ----
+    for (const event of ALL_INDIVIDUAL_EVENTS) {
+      result[event] = await computeEventTop8(ctx, event, args.meetId, teamNameMap);
+    }
+
+    // ---- Relay events — fetch meetEntries once, reuse across all relays ----
+    let allMeetEntries: any[] = [];
+    if (args.meetId) {
+      allMeetEntries = await ctx.db
+        .query("meetEntries")
+        .withIndex("by_meet", (q: any) => q.eq("meetId", args.meetId!))
+        .collect();
+    }
+    const submittedRelayTeams = new Set(allMeetEntries.map((e: any) => e.teamSlug));
+
+    for (const event of ALL_RELAY_EVENTS) {
+      const relayTimes = await ctx.db
+        .query("relayTimes")
+        .withIndex("by_event", (q) => q.eq("event", event))
+        .collect();
+      relayTimes.sort((a, b) => a.time - b.time);
+
+      const seen = new Set<string>();
+      const rows: { teamSlug: string; teamName: string; time: number }[] = [];
+      for (const r of relayTimes) {
+        if (seen.has(r.team)) continue;
+        seen.add(r.team);
+        rows.push({ teamSlug: r.team, teamName: teamNameMap.get(r.team) ?? r.team, time: r.time });
+      }
+
+      if (args.meetId) {
+        const enteredTeams = new Set(
+          allMeetEntries.filter((e: any) => e.event === event).map((e: any) => e.teamSlug)
+        );
+        const predMap = new Map(
+          allMeetEntries
+            .filter((e: any) => e.event === event && e.predictedRelayTime != null)
+            .map((e: any) => [e.teamSlug, e.predictedRelayTime as number])
+        );
+        const afterFilter: typeof rows = [];
+        for (const row of rows) {
+          if (submittedRelayTeams.has(row.teamSlug) && !enteredTeams.has(row.teamSlug)) continue;
+          const pred = predMap.get(row.teamSlug);
+          if (pred != null) row.time = Math.min(row.time, pred);
+          afterFilter.push(row);
+          predMap.delete(row.teamSlug);
+        }
+        for (const [slug, pred] of predMap) {
+          afterFilter.push({ teamSlug: slug, teamName: teamNameMap.get(slug) ?? slug, time: pred });
+        }
+        afterFilter.sort((a, b) => a.time - b.time);
+        result[event] = afterFilter.slice(0, 8);
+      } else {
+        result[event] = rows.slice(0, 8);
+      }
+    }
+
+    return result;
   },
 });
 
@@ -879,6 +965,21 @@ export const simulate = query({
 // ---------------------------------------------------------------------------
 // Mutations
 // ---------------------------------------------------------------------------
+
+export const recalculateAllProjectedTotals = action({
+  args: { meetId: v.id("meets") },
+  handler: async (ctx, args) => {
+    // Reuse the existing meetProjectedScores query which has all the scoring logic
+    const scores = await ctx.runQuery(api.meets.meetProjectedScores, { meetId: args.meetId });
+    for (const [teamSlug, total] of Object.entries(scores)) {
+      await ctx.runMutation(api.meets.saveProjectedTotal, {
+        meetId: args.meetId,
+        teamSlug,
+        total: total as number,
+      });
+    }
+  },
+});
 
 export const saveProjectedTotal = mutation({
   args: { meetId: v.id("meets"), teamSlug: v.string(), total: v.number() },

@@ -37,44 +37,29 @@ export function LineupEditor({ meetId, teamSlug, teamName, onBack }: Props) {
   const saveProjectedTotal = useMutation(api.meets.saveProjectedTotal);
 
   const [hoveredEvent, setHoveredEvent] = useState<string | null>(null);
+  const [autoFillMsg, setAutoFillMsg] = useState<string | null>(null);
+  const [fieldAutoFillMsg, setFieldAutoFillMsg] = useState<string | null>(null);
   const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Pre-fetch rankings for all individual + field events so hover is instant
-  // Each useQuery call is stable (same order every render)
-  const r100 = useQuery(api.meets.eventRankings, { event: "100 Meters", meetId }) ?? [];
-  const r200 = useQuery(api.meets.eventRankings, { event: "200 Meters", meetId }) ?? [];
-  const r400 = useQuery(api.meets.eventRankings, { event: "400 Meters", meetId }) ?? [];
-  const r800 = useQuery(api.meets.eventRankings, { event: "800 Meters", meetId }) ?? [];
-  const r1500 = useQuery(api.meets.eventRankings, { event: "1500 Meters", meetId }) ?? [];
-  const r3000 = useQuery(api.meets.eventRankings, { event: "3000 Meters", meetId }) ?? [];
-  const r100h = useQuery(api.meets.eventRankings, { event: "100 Meter Hurdles", meetId }) ?? [];
-  const r400h = useQuery(api.meets.eventRankings, { event: "400 Meter Hurdles", meetId }) ?? [];
-  const rHJ = useQuery(api.meets.eventRankings, { event: "High Jump", meetId }) ?? [];
-  const rLJ = useQuery(api.meets.eventRankings, { event: "Long Jump", meetId }) ?? [];
-  const rSP = useQuery(api.meets.eventRankings, { event: "Shot Put", meetId }) ?? [];
-  const rDT = useQuery(api.meets.eventRankings, { event: "Discus Throw", meetId }) ?? [];
-  // Relay rankings
-  const rr4x1 = useQuery(api.meets.relayRankings, { event: "4x100 Meter Relay", meetId }) ?? [];
-  const rr4x2 = useQuery(api.meets.relayRankings, { event: "4x200 Meter Relay", meetId }) ?? [];
-  const rr4x4 = useQuery(api.meets.relayRankings, { event: "4x400 Meter Relay", meetId }) ?? [];
-  const rr4x8 = useQuery(api.meets.relayRankings, { event: "4x800 Meter Relay", meetId }) ?? [];
-  const rrSM = useQuery(api.meets.relayRankings, { event: "Sprint Medley Relay", meetId }) ?? [];
-  const rrDM = useQuery(api.meets.relayRankings, { event: "Distance Medley Relay", meetId }) ?? [];
-  const rrSH = useQuery(api.meets.relayRankings, { event: "Shuttle Hurdle Relay", meetId }) ?? [];
+  // Load rankings once on mount, then unsubscribe — avoids reactive re-execution
+  // during imports. User can manually refresh with the Refresh button.
+  const [rankingsSnapped, setRankingsSnapped] = useState(false);
+  const [localRankings, setLocalRankings] = useState<Record<string, any[]>>({});
+  const liveRankings = useQuery(api.meets.allRankings, rankingsSnapped ? "skip" : { meetId });
+  useEffect(() => {
+    if (liveRankings && !rankingsSnapped) {
+      setLocalRankings(liveRankings);
+      setRankingsSnapped(true);
+    }
+  }, [liveRankings, rankingsSnapped]);
+
   const rankingsMap = useMemo(() => {
     const m = new Map<string, any[]>();
-    m.set("100 Meters", r100); m.set("200 Meters", r200);
-    m.set("400 Meters", r400); m.set("800 Meters", r800);
-    m.set("1500 Meters", r1500); m.set("3000 Meters", r3000);
-    m.set("100 Meter Hurdles", r100h); m.set("400 Meter Hurdles", r400h);
-    m.set("High Jump", rHJ); m.set("Long Jump", rLJ);
-    m.set("Shot Put", rSP); m.set("Discus Throw", rDT);
-    m.set("4x100 Meter Relay", rr4x1); m.set("4x200 Meter Relay", rr4x2);
-    m.set("4x400 Meter Relay", rr4x4); m.set("4x800 Meter Relay", rr4x8);
-    m.set("Sprint Medley Relay", rrSM); m.set("Distance Medley Relay", rrDM);
-    m.set("Shuttle Hurdle Relay", rrSH);
+    for (const [event, rows] of Object.entries(localRankings)) {
+      m.set(event, rows as any[]);
+    }
     return m;
-  }, [r100, r200, r400, r800, r1500, r3000, r100h, r400h, rHJ, rLJ, rSP, rDT, rr4x1, rr4x2, rr4x4, rr4x8, rrSM, rrDM, rrSH]);
+  }, [localRankings]);
 
   function handleMouseEnter(event: string) {
     if (hoverTimeout.current) clearTimeout(hoverTimeout.current);
@@ -335,7 +320,15 @@ export function LineupEditor({ meetId, teamSlug, teamName, onBack }: Props) {
               Projected: {projectedTotal} pts
             </span>
           </h2>
-          <p className="lineup-hint">Athletes are limited to 4 events each. Hover over an event name to see 4A rankings.</p>
+          <p className="lineup-hint">Athletes are limited to 4 events each. Hover over an event name to see 4A rankings.{" "}
+            <button
+              className="btn-refresh-rankings"
+              onClick={() => setRankingsSnapped(false)}
+              title="Reload rankings from database"
+            >
+              {liveRankings === undefined && !rankingsSnapped ? "Loading…" : "↻ Refresh Rankings"}
+            </button>
+          </p>
         </div>
 
       <div className="lineup-sections">
@@ -347,26 +340,37 @@ export function LineupEditor({ meetId, teamSlug, teamName, onBack }: Props) {
             <button
               className="btn-auto-populate"
               onClick={() => {
+                let filled = 0;
                 for (const event of INDIVIDUAL_EVENTS) {
                   const evData = trackEventData.get(event)!;
                   const allowEst = ESTIMATE_OK_EVENTS.has(event);
-                  // Pick top 2 athletes who have a usable time
+                  const rankings = rankingsMap.get(event) ?? [];
+                  const rankedTimes = rankings.map((r: any) => r.time);
                   const eligible = evData.sorted.filter((a) => {
-                    const pred = predictEventTime(a.times, event);
-                    const hasTime = pred && (allowEst || !pred.estimated);
-                    const hasOverride = evData.hasOverride.has(a._id);
-                    return hasTime || hasOverride;
+                    const override = existingOverrides.find((o) => o.event === event && o.athleteId === a._id);
+                    const pred = override ? { time: override.time, estimated: false } : predictEventTime(a.times, event);
+                    if (!pred || (!allowEst && pred.estimated)) return false;
+                    const betterCount = rankedTimes.filter((t: number) => t < pred.time).length;
+                    return betterCount < 8;
                   });
                   const top2 = eligible.slice(0, 2).map((a) => a._id as GenericId<"athletes">);
                   if (top2.length > 0) {
                     setEntry({ meetId, teamSlug, event, athleteIds: top2 });
+                    filled++;
                   }
+                }
+                if (filled === 0) {
+                  setAutoFillMsg("No athletes would score points in any track event.");
+                  setTimeout(() => setAutoFillMsg(null), 4000);
+                } else {
+                  setAutoFillMsg(null);
                 }
               }}
             >
               Auto-fill Top 2
             </button>
           </div>
+          {autoFillMsg && <p className="autofill-no-scorers">{autoFillMsg}</p>}
           <p className="lineup-field-hint">Up to 2 athletes per event per team.</p>
           <div className="lineup-event-rows">
             {INDIVIDUAL_EVENTS.map((event) => {
@@ -456,9 +460,17 @@ export function LineupEditor({ meetId, teamSlug, teamName, onBack }: Props) {
             <button
               className="btn-auto-populate"
               onClick={() => {
+                let filled = 0;
                 for (const event of FIELD_EVENTS) {
+                  const rankings = rankingsMap.get(event) ?? [];
+                  const rankedMarks = rankings.map((r: any) => r.time);
                   const eligible = athletes
-                    .filter((a) => a.times.some((t) => t.event === event))
+                    .filter((a) => {
+                      const mark = a.times.find((t) => t.event === event)?.time;
+                      if (mark == null) return false;
+                      const betterCount = rankedMarks.filter((m: number) => m > mark).length;
+                      return betterCount < 8;
+                    })
                     .sort((a, b) => {
                       const aTime = a.times.find((t) => t.event === event)?.time ?? 0;
                       const bTime = b.times.find((t) => t.event === event)?.time ?? 0;
@@ -467,13 +479,21 @@ export function LineupEditor({ meetId, teamSlug, teamName, onBack }: Props) {
                   const top2 = eligible.slice(0, 2).map((a) => a._id as GenericId<"athletes">);
                   if (top2.length > 0) {
                     setEntry({ meetId, teamSlug, event, athleteIds: top2 });
+                    filled++;
                   }
+                }
+                if (filled === 0) {
+                  setFieldAutoFillMsg("No athletes would score points in any field event.");
+                  setTimeout(() => setFieldAutoFillMsg(null), 4000);
+                } else {
+                  setFieldAutoFillMsg(null);
                 }
               }}
             >
               Auto-fill Top 2
             </button>
           </div>
+          {fieldAutoFillMsg && <p className="autofill-no-scorers">{fieldAutoFillMsg}</p>}
           <p className="lineup-field-hint">Up to 2 athletes per event.</p>
           <div className="lineup-event-rows">
             {FIELD_EVENTS.map((event) => {
@@ -649,15 +669,31 @@ export function LineupEditor({ meetId, teamSlug, teamName, onBack }: Props) {
 
               return (
                 <div key={event} className="lineup-relay-block">
-                  <h4
-                    className={`lineup-relay-name clickable ${hoveredEvent === event ? "active" : ""}`}
-                    onMouseEnter={() => handleMouseEnter(event)}
-                    onMouseLeave={handleMouseLeave}
-                  >{event}
-                    {relayProjectedPts[event] != null && (
-                      <span className="event-projected-pts"> ({relayProjectedPts[event]} pts)</span>
+                  <div className="lineup-relay-header">
+                    <h4
+                      className={`lineup-relay-name clickable ${hoveredEvent === event ? "active" : ""}`}
+                      onMouseEnter={() => handleMouseEnter(event)}
+                      onMouseLeave={handleMouseLeave}
+                    >{event}
+                      {relayProjectedPts[event] != null && (
+                        <span className="event-projected-pts"> ({relayProjectedPts[event]} pts)</span>
+                      )}
+                    </h4>
+                    {effectiveLegs.some((l) => l !== null) && (
+                    <button
+                      className="btn-clear-relay"
+                      title="Clear relay"
+                      onClick={() => {
+                        setRelayLegs((prev) => {
+                          const next = new Map(prev);
+                          next.set(event, [null, null, null, null]);
+                          return next;
+                        });
+                        setEntry({ meetId, teamSlug, event, athleteIds: [] });
+                      }}
+                    >Clear</button>
                     )}
-                  </h4>
+                  </div>
                   <RelayEditor
                     meetId={meetId}
                     teamSlug={teamSlug}

@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useQuery, useMutation } from "convex/react";
+import { useState, useCallback } from "react";
+import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import { LineupEditor } from "./LineupEditor";
@@ -17,11 +17,20 @@ export function MeetDetail({ meetId, onBack }: Props) {
   const allTeams = useQuery(api.teams.list) ?? [];
   const addTeam = useMutation(api.meets.addTeam);
   const removeTeam = useMutation(api.meets.removeTeam);
+  const recalculate = useAction(api.meets.recalculateAllProjectedTotals);
   const simulation = useQuery(api.meets.getProjectedTotals, { meetId });
 
   const [editingTeam, setEditingTeam] = useState<string | null>(null);
   const [showResults, setShowResults] = useState(false);
   const [addTeamSlug, setAddTeamSlug] = useState("");
+  const [recalculating, setRecalculating] = useState(false);
+  const [showFullStandings, setShowFullStandings] = useState(false);
+
+  const handleRecalculate = useCallback(async () => {
+    setRecalculating(true);
+    await recalculate({ meetId });
+    setRecalculating(false);
+  }, [recalculate, meetId]);
 
   if (!meet) return <div className="loading-msg">Loading meet…</div>;
 
@@ -65,38 +74,62 @@ export function MeetDetail({ meetId, onBack }: Props) {
 
       {meet.teamSlugs.length > 0 && (
         <div className="meet-scoresheet card">
-          <h3 className="scoresheet-title">Projected Score Sheet</h3>
+          <div className="scoresheet-title-row">
+            <h3 className="scoresheet-title">Projected Score Sheet</h3>
+            <button className="btn-secondary btn-sm" onClick={handleRecalculate} disabled={recalculating}>
+              {recalculating ? "Recalculating…" : "↻ Recalculate"}
+            </button>
+          </div>
           {!simulation ? (
             <p className="empty-msg">Calculating…</p>
           ) : (() => {
             const standings = Object.entries(simulation)
               .map(([slug, pts]) => ({ slug, pts }))
-              .sort((a, b) => b.pts - a.pts);
+              .sort((a, b) => b.pts - a.pts)
+              .filter((r) => r.pts > 0);
+            const visibleStandings = showFullStandings ? standings : standings.slice(0, 10);
+            const cols = showFullStandings
+              ? (() => { const half = Math.ceil(standings.length / 2); return [0,1].map(i => ({ col: standings.slice(i*half, (i+1)*half), offset: i*half })); })()
+              : [{ col: visibleStandings.slice(0, 10), offset: 0 }];
             return standings.every((r) => r.pts === 0) ? (
               <p className="empty-msg">No lineups entered yet — fill in lineups to see scores.</p>
             ) : (
-              <table className="standings-table">
-                <thead>
-                  <tr>
-                    <th>Place</th>
-                    <th>Team</th>
-                    <th style={{ textAlign: "right" }}>Pts</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {standings.map((row, i) => (
-                    <tr key={row.slug} className={i === 0 && row.pts > 0 ? "gold-row" : ""}>
-                      <td style={{ width: 36 }}>
-                        {row.pts > 0
-                          ? (MEDAL[i] ?? <span style={{ color: "var(--text-light)" }}>{i + 1}</span>)
-                          : <span style={{ color: "var(--text-light)" }}>—</span>}
-                      </td>
-                      <td>{teamName(row.slug)}</td>
-                      <td style={{ textAlign: "right" }}><strong>{row.pts}</strong></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <>
+              <div className={showFullStandings ? "standings-two-col" : "standings-one-col"}>
+                {cols.map(({ col, offset }, colIdx) => (
+                  <table key={colIdx} className="standings-table">
+                    <thead>
+                      <tr>
+                        <th>Place</th>
+                        <th>Team</th>
+                        <th style={{ textAlign: "right" }}>Pts</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {col.map((row, i) => {
+                        const globalIdx = offset + i;
+                        return (
+                          <tr key={row.slug} className={globalIdx === 0 && row.pts > 0 ? "gold-row" : ""}>
+                            <td style={{ width: 36 }}>
+                              {row.pts > 0
+                                ? (MEDAL[globalIdx] ?? <span style={{ color: "var(--text-light)" }}>{globalIdx + 1}</span>)
+                                : <span style={{ color: "var(--text-light)" }}>—</span>}
+                            </td>
+                            <td>{teamName(row.slug)}</td>
+                            <td style={{ textAlign: "right" }}><strong>{row.pts}</strong></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                ))}
+              </div>
+              {standings.length > 10 && (
+                <button className="btn-show-full-standings" onClick={() => setShowFullStandings(v => !v)}>
+                  {showFullStandings ? "Show top 10" : `Show full list (${standings.length} teams)`}
+                </button>
+              )}
+              </>
             );
           })()}
         </div>
