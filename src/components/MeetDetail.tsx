@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import { useQuery, useMutation, useAction } from "convex/react";
+import { useQuery, useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import { LineupEditor } from "./LineupEditor";
@@ -17,20 +17,12 @@ export function MeetDetail({ meetId, onBack }: Props) {
   const allTeams = useQuery(api.teams.list) ?? [];
   const addTeam = useMutation(api.meets.addTeam);
   const removeTeam = useMutation(api.meets.removeTeam);
-  const recalculate = useAction(api.meets.recalculateAllProjectedTotals);
   const simulation = useQuery(api.meets.getProjectedTotals, { meetId });
 
   const [editingTeam, setEditingTeam] = useState<string | null>(null);
   const [showResults, setShowResults] = useState(false);
   const [addTeamSlug, setAddTeamSlug] = useState("");
-  const [recalculating, setRecalculating] = useState(false);
   const [showFullStandings, setShowFullStandings] = useState(false);
-
-  const handleRecalculate = useCallback(async () => {
-    setRecalculating(true);
-    await recalculate({ meetId });
-    setRecalculating(false);
-  }, [recalculate, meetId]);
 
   if (!meet) return <div className="loading-msg">Loading meet…</div>;
 
@@ -76,9 +68,6 @@ export function MeetDetail({ meetId, onBack }: Props) {
         <div className="meet-scoresheet card">
           <div className="scoresheet-title-row">
             <h3 className="scoresheet-title">Projected Score Sheet</h3>
-            <button className="btn-secondary btn-sm" onClick={handleRecalculate} disabled={recalculating}>
-              {recalculating ? "Recalculating…" : "↻ Recalculate"}
-            </button>
           </div>
           {!simulation ? (
             <p className="empty-msg">Calculating…</p>
