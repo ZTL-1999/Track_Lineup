@@ -260,7 +260,7 @@ export function LineupEditor({ meetId, teamSlug, teamName, onBack }: Props) {
   const trackEventData = useMemo(() => {
     const data = new Map<
       string,
-      { sorted: typeof athletes; labels: Map<string, string>; needsManual: Set<string>; hasOverride: Set<string> }
+      { sorted: typeof athletes; labels: Map<string, string>; needsManual: Set<string>; hasOverride: Set<string>; isEstimated: Set<string> }
     >();
     for (const event of INDIVIDUAL_EVENTS) {
       const allowEst = ESTIMATE_OK_EVENTS.has(event);
@@ -277,12 +277,22 @@ export function LineupEditor({ meetId, teamSlug, teamName, onBack }: Props) {
       const labels = new Map<string, string>();
       const needsManual = new Set<string>();
       const hasOverride = new Set<string>();
+      const isEstimated = new Set<string>();
       for (const a of sorted) {
         const pred = predictEventTime(a.times, event);
         let label = a.name;
         if (pred && (allowEst || !pred.estimated)) {
           label += ` — ${formatTime(pred.time)}`;
-          if (pred.estimated) label += " (est.)";
+          if (pred.estimated) {
+            label += " (est.)";
+            isEstimated.add(a._id);
+          }
+          // If there's a manual override for an estimated time, show that instead
+          const override = teamOverrides.find((o) => o.event === event && o.athleteId === a._id);
+          if (override && pred.estimated) {
+            label = `${a.name} — ${formatTime(override.time)} (manual)`;
+            hasOverride.add(a._id);
+          }
         } else {
           needsManual.add(a._id);
           // Include manual override time in label if it exists
@@ -294,7 +304,7 @@ export function LineupEditor({ meetId, teamSlug, teamName, onBack }: Props) {
         }
         labels.set(a._id, label);
       }
-      data.set(event, { sorted, labels, needsManual, hasOverride });
+      data.set(event, { sorted, labels, needsManual, hasOverride, isEstimated });
     }
     return data;
   }, [athletes, teamOverrides]);
@@ -412,11 +422,11 @@ export function LineupEditor({ meetId, teamSlug, teamName, onBack }: Props) {
                               };
                             })}
                           />
-                          {selectedId && evData.needsManual.has(selectedId) && (
+                          {selectedId && (evData.needsManual.has(selectedId) || evData.isEstimated.has(selectedId)) && (
                             <input
                               type="text"
-                              className="manual-time-input"
-                              placeholder="0:00.00"
+                              className={`manual-time-input${evData.isEstimated.has(selectedId) && !evData.hasOverride.has(selectedId) ? " estimated-input" : ""}`}
+                              placeholder={evData.isEstimated.has(selectedId) ? "Override est. time" : "0:00.00"}
                               defaultValue={getTimeOverrideDisplay(event, selectedId)}
                               key={`${selectedId}-${getTimeOverrideDisplay(event, selectedId)}`}
                               onBlur={(e) => {
@@ -605,7 +615,9 @@ export function LineupEditor({ meetId, teamSlug, teamName, onBack }: Props) {
                 const legEvent = legEvents[i] ?? "";
                 const isDistanceLeg = DISTANCE_THRESHOLD.has(legEvent);
                 const entry = ensure(id, athlete.name);
-                const label = shortEvent(event);
+                const MEDLEY_EVENTS = new Set(["Sprint Medley Relay", "Distance Medley Relay"]);
+                const legDist = MEDLEY_EVENTS.has(event) ? shortEvent(legEvent) : null;
+                const label = legDist ? `${shortEvent(event)} (${legDist})` : shortEvent(event);
                 addEvent(entry, label, isDistanceLeg);
               });
             }
@@ -622,6 +634,33 @@ export function LineupEditor({ meetId, teamSlug, teamName, onBack }: Props) {
 
             if (allEntries.length === 0) return null;
 
+            // Day color mapping keyed by shortEvent label
+            const EVENT_DAY: Record<string, 1 | 2 | 3> = {
+              "3000m": 1, "Discus Throw": 1, "4x800m": 1, "400m": 1, "High Jump": 1,
+              "Distance Medley": 2, "4x200m": 2, "Shot Put": 2, "400mH": 2, "Long Jump": 2,
+              "Sprint Medley": 3, "800m": 3, "Shuttle Hurdle": 3, "100m": 3, "100mH": 3, "200m": 3, "1500m": 3, "4x100m": 3, "4x400m": 3,
+            };
+
+            // Full sort order: day first, then shortest distance within day
+            const EVENT_SORT_ORDER: string[] = [
+              // Day 1
+              "400m", "3000m", "High Jump", "Discus Throw", "4x800m",
+              // Day 2
+              "400mH", "Long Jump", "Shot Put", "4x200m", "Distance Medley",
+              // Day 3
+              "100m", "100mH", "200m", "800m", "1500m", "4x100m", "4x400m", "Sprint Medley", "Shuttle Hurdle",
+            ];
+            const eventSortKey = (label: string) => {
+              const base = label.replace(/ \(.*\)$/, "");
+              const i = EVENT_SORT_ORDER.indexOf(base);
+              return i === -1 ? 999 : i;
+            };
+            const dayClass = (label: string) => {
+              const base = label.replace(/ \(.*\)$/, "");
+              const day = EVENT_DAY[base];
+              return day ? `event-day-${day}` : "event-day-none";
+            };
+
             const Section = ({ title, entries }: { title: string; entries: AthleteSummary[] }) =>
               entries.length === 0 ? null : (
                 <div className="field-summary-section">
@@ -630,7 +669,11 @@ export function LineupEditor({ meetId, teamSlug, teamName, onBack }: Props) {
                     {entries.map((entry) => (
                       <li key={entry.name} className="field-summary-row">
                         <span className="field-summary-name">{entry.name} <span className="field-summary-count">({totalEvents(entry)})</span></span>
-                        <span className="field-summary-events">{entry.allEvents.join(", ")}</span>
+                        <span className="field-summary-events">
+                          {[...entry.allEvents].sort((a, b) => eventSortKey(a) - eventSortKey(b)).map((ev) => (
+                            <span key={ev} className={`event-day-badge ${dayClass(ev)}`}>{ev}</span>
+                          ))}
+                        </span>
                       </li>
                     ))}
                   </ul>
@@ -640,6 +683,11 @@ export function LineupEditor({ meetId, teamSlug, teamName, onBack }: Props) {
             return (
               <div className="field-athlete-summary">
                 <h3 className="lineup-section-title">📋 Athlete Roster</h3>
+                <div className="event-day-key">
+                  <span className="event-day-badge event-day-1">Day 1</span>
+                  <span className="event-day-badge event-day-2">Day 2</span>
+                  <span className="event-day-badge event-day-3">Day 3</span>
+                </div>
                 <Section title="Sprints & Hurdles" entries={sprintAthletes} />
                 <Section title="Distance" entries={distanceAthletes} />
                 <Section title="Field" entries={fieldAthletes} />

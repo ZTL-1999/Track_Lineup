@@ -631,18 +631,42 @@ export const meetProjectedScores = query({
     }
 
     // ---- Field events ----
-    const allFieldEvents = new Set(fieldMarks.map((m) => m.event));
-    for (const event of allFieldEvents) {
+    // ---- Field events ----
+    // Collect field events from both meetEntries and meetFieldMarks
+    const allFieldEventNames = new Set([
+      ...fieldMarks.map((m) => m.event),
+      ...allEntries.filter((e) => FIELD_EVENTS.has(e.event)).map((e) => e.event),
+    ]);
+    for (const event of allFieldEventNames) {
       const top8 = await computeEventTop8(ctx, event, args.meetId, teamNameMap);
       const rankedMarks = top8.map((r) => r.time);
 
-      const eventMarks = fieldMarks.filter((m) => m.event === event);
+      // Build per-team mark lists: entry PR marks first, then override with meetFieldMarks
       const byTeam = new Map<string, number[]>();
-      for (const m of eventMarks) {
+      // From meetEntries — look up athlete PR mark from times table
+      for (const entry of allEntries.filter((e) => e.event === event)) {
+        for (const athleteId of entry.athleteIds) {
+          if (!athleteId) continue;
+          const pr = await ctx.db
+            .query("times")
+            .withIndex("by_athlete", (q) => q.eq("athleteId", athleteId as any))
+            .collect()
+            .then((ts) => ts.find((t) => t.event === event));
+          if (!pr) continue;
+          const arr = byTeam.get(entry.teamSlug) ?? [];
+          arr.push(pr.time);
+          byTeam.set(entry.teamSlug, arr);
+        }
+      }
+      // Override/supplement with meetFieldMarks (actual meet marks)
+      for (const m of fieldMarks.filter((m) => m.event === event)) {
         const arr = byTeam.get(m.teamSlug) ?? [];
+        // Replace PR with meet mark if the same athlete is already in there
+        // (just add; duplicates are harmless since we sort desc and take top 2)
         arr.push(m.mark);
         byTeam.set(m.teamSlug, arr);
       }
+
       for (const [slug, marks] of byTeam) {
         marks.sort((a, b) => b - a);
         const usedPlaces = new Set<number>();
@@ -734,6 +758,14 @@ export const simulate = query({
     }
     for (const m of fieldMarks) athleteIdSet.add(m.athleteId);
 
+    // Build team name map
+    const allTeams = await ctx.db.query("teams").collect();
+    const teamNameMap = new Map<string, string>();
+    for (const t of allTeams) {
+      const words = t.name.split(" ");
+      teamNameMap.set(t.slug, words.length > 1 ? words.slice(0, -1).join(" ") : t.name);
+    }
+
     // athlete times keyed by athleteId
     const timesMap = new Map<string, { event: string; time: number }[]>();
     const athleteNames = new Map<string, string>();
@@ -793,9 +825,30 @@ export const simulate = query({
 
     for (const event of allEventNames) {
       if (FIELD_EVENTS.has(event)) {
-        // Field event — highest mark wins
-        const marks = marksByEvent.get(event) ?? [];
-        const sorted = [...marks].sort((a, b) => b.mark - a.mark);
+        // Field event — highest mark wins.
+        // Merge explicit meetFieldMarks (actual meet marks) with meetEntries (PR marks).
+        // meetFieldMarks take precedence per athlete; fall back to athlete's stored PR mark.
+        type FieldRow = { athleteId: string; teamSlug: string; mark: number };
+        const rowMap = new Map<string, FieldRow>(); // keyed by athleteId
+
+        // First, collect entries from meetEntries and look up PR marks
+        for (const entry of (entriesByEvent.get(event) ?? [])) {
+          for (const athleteId of entry.athleteIds) {
+            if (!athleteId) continue;
+            const athleteTimes = timesMap.get(athleteId) ?? [];
+            const pr = athleteTimes.find((t) => t.event === event);
+            if (pr) {
+              rowMap.set(athleteId, { athleteId, teamSlug: entry.teamSlug, mark: pr.time });
+            }
+          }
+        }
+
+        // Then override with any manually-entered meetFieldMarks
+        for (const m of (marksByEvent.get(event) ?? [])) {
+          rowMap.set(m.athleteId, { athleteId: m.athleteId, teamSlug: m.teamSlug, mark: m.mark });
+        }
+
+        const sorted = [...rowMap.values()].sort((a, b) => b.mark - a.mark);
         const places: PlaceRow[] = sorted.map((m, i) => {
           const pts = PLACE_POINTS[i] ?? 0;
           teamPoints.set(m.teamSlug, (teamPoints.get(m.teamSlug) ?? 0) + pts);
@@ -891,7 +944,7 @@ export const simulate = query({
           return {
             place: i + 1,
             athleteId: "",
-            athleteName: `${r.teamSlug} relay`,
+            athleteName: teamNameMap.get(r.teamSlug) ?? r.teamSlug,
             teamSlug: r.teamSlug,
             value: r.totalTime,
             estimated: r.estimated,
@@ -903,7 +956,7 @@ export const simulate = query({
         // Individual track event — lowest time wins
         // Each entry can have up to 2 athleteIds (2 per team per event)
         const eventEntries = entriesByEvent.get(event) ?? [];
-        type IndRow = { athleteId: string; teamSlug: string; time: number };
+        type IndRow = { athleteId: string; teamSlug: string; time: number; estimated: boolean };
         const rows: IndRow[] = [];
 
         for (const entry of eventEntries) {
@@ -914,11 +967,17 @@ export const simulate = query({
               (o) => o.event === event && o.athleteId === athleteId && o.teamSlug === entry.teamSlug
             );
             if (override) {
-              rows.push({ athleteId, teamSlug: entry.teamSlug, time: override.time });
+              rows.push({ athleteId, teamSlug: entry.teamSlug, time: override.time, estimated: false });
             } else {
               const athleteTimes = timesMap.get(athleteId) ?? [];
               const t = athleteTimes.find((t) => t.event === event);
-              if (t) rows.push({ athleteId, teamSlug: entry.teamSlug, time: t.time });
+              if (t) {
+                rows.push({ athleteId, teamSlug: entry.teamSlug, time: t.time, estimated: false });
+              } else if (ESTIMATE_OK_EVENTS.has(event)) {
+                // Riegel prediction — same logic as LineupEditor
+                const pred = predictEventTime(athleteTimes, event);
+                if (pred) rows.push({ athleteId, teamSlug: entry.teamSlug, time: pred.time, estimated: pred.estimated });
+              }
             }
           }
         }
@@ -933,7 +992,7 @@ export const simulate = query({
             athleteName: athleteNames.get(r.athleteId) ?? "Unknown",
             teamSlug: r.teamSlug,
             value: r.time,
-            estimated: false,
+            estimated: r.estimated,
             points: pts,
           };
         });
@@ -1199,6 +1258,72 @@ export const setTimeOverride = mutation({
     } else if (existing) {
       await ctx.db.delete(existing._id);
     }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Saved simulations
+// ---------------------------------------------------------------------------
+
+const placeRowValidator = v.object({
+  place: v.number(),
+  athleteId: v.string(),
+  athleteName: v.string(),
+  teamSlug: v.string(),
+  value: v.number(),
+  estimated: v.boolean(),
+  points: v.number(),
+});
+
+export const listSimulations = query({
+  args: { meetId: v.id("meets") },
+  handler: async (ctx, args) => {
+    return ctx.db
+      .query("meetSimulations")
+      .withIndex("by_meet", (q) => q.eq("meetId", args.meetId))
+      .collect();
+  },
+});
+
+export const saveSimulation = mutation({
+  args: {
+    meetId: v.id("meets"),
+    name: v.string(),
+    eventOverrides: v.array(v.object({
+      event: v.string(),
+      places: v.array(placeRowValidator),
+    })),
+  },
+  handler: async (ctx, args) => {
+    return ctx.db.insert("meetSimulations", {
+      meetId: args.meetId,
+      name: args.name,
+      eventOverrides: args.eventOverrides,
+    });
+  },
+});
+
+export const updateSimulation = mutation({
+  args: {
+    simulationId: v.id("meetSimulations"),
+    name: v.string(),
+    eventOverrides: v.array(v.object({
+      event: v.string(),
+      places: v.array(placeRowValidator),
+    })),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.simulationId, {
+      name: args.name,
+      eventOverrides: args.eventOverrides,
+    });
+  },
+});
+
+export const deleteSimulation = mutation({
+  args: { simulationId: v.id("meetSimulations") },
+  handler: async (ctx, args) => {
+    await ctx.db.delete(args.simulationId);
   },
 });
 

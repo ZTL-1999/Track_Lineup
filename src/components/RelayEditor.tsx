@@ -154,16 +154,17 @@ export function RelayEditor({
     }
     const athlete = athletes.find((a) => a._id === id);
     const pred = athlete ? predictLegTime(athlete.times, legDistances[i], event) : null;
-    legPredictions.push(pred);
-    if (pred) {
-      relayTotal += pred.time;
-      if (pred.estimated) relayEstimated = true;
+    // If there's a manual override, use it (even if an estimate exists)
+    const override = teamOverrides.find((o) => o.event === event && o.athleteId === id);
+    if (override) {
+      legPredictions.push({ time: override.time, estimated: false });
+      relayTotal += override.time;
+      relayHasOverride = true;
     } else {
-      // Check for manual override
-      const override = teamOverrides.find((o) => o.event === event && o.athleteId === id);
-      if (override) {
-        relayTotal += override.time;
-        relayHasOverride = true;
+      legPredictions.push(pred);
+      if (pred) {
+        relayTotal += pred.time;
+        if (pred.estimated) relayEstimated = true;
       } else {
         relayValid = false;
       }
@@ -203,10 +204,12 @@ export function RelayEditor({
           return aTime - bTime;
         });
 
-        const hasOverride = !legPred && currentId && !!teamOverrides.find((o) => o.event === event && o.athleteId === currentId);
+        const currentOverride = currentId ? teamOverrides.find((o) => o.event === event && o.athleteId === currentId) : undefined;
+        const hasOverride = currentId && !!currentOverride;
 
         return (
-          <div key={i} className="relay-leg-row">
+          <div key={i} className="relay-leg-block">
+            <div className="relay-leg-row">
             <span className="relay-leg-label">{legLabels[i]}</span>
             <SearchableSelect
               className={`relay-leg-select${hasOverride ? " manual-override" : ""}`}
@@ -220,14 +223,13 @@ export function RelayEditor({
                 );
                 const isAtLimit = count >= 4 && currentId !== a._id;
                 const pred = predictLegTime(a.times, dist, event);
+                const ov = teamOverrides.find((o) => o.event === event && o.athleteId === a._id);
                 let label = a.name;
-                if (pred) {
+                if (ov) {
+                  label += ` — ${fmt(ov.time)} (manual)`;
+                } else if (pred) {
                   label += ` — ${fmt(pred.time)}`;
                   if (pred.estimated) label += " (est.)";
-                } else {
-                  // Show override time in label if exists
-                  const ov = teamOverrides.find((o) => o.event === event && o.athleteId === a._id);
-                  if (ov) label += ` — ${fmt(ov.time)}`;
                 }
                 if (isAtLimit) label += " [4 events]";
                 return {
@@ -252,26 +254,39 @@ export function RelayEditor({
                 onBlur={(e) => {
                   const val = e.target.value.trim();
                   if (val === "") {
-                    setTimeOverride({
-                      meetId,
-                      teamSlug,
-                      event,
-                      athleteId: currentId as GenericId<"athletes">,
-                    });
+                    setTimeOverride({ meetId, teamSlug, event, athleteId: currentId as GenericId<"athletes"> });
                   } else {
                     const parsed = parseTime(val);
                     if (parsed != null && parsed > 0) {
-                      setTimeOverride({
-                        meetId,
-                        teamSlug,
-                        event,
-                        athleteId: currentId as GenericId<"athletes">,
-                        time: parsed,
-                      });
+                      setTimeOverride({ meetId, teamSlug, event, athleteId: currentId as GenericId<"athletes">, time: parsed });
                     }
                   }
                 }}
               />
+            )}
+            </div>
+            {legPred?.estimated && currentId && (
+              <div className="relay-leg-override-row">
+                <span className="relay-leg-override-label">Override est. time:</span>
+                <input
+                  type="text"
+                  className="manual-time-input estimated-input"
+                  placeholder="0:00.00"
+                  defaultValue={getOverrideDisplay(currentId)}
+                  key={`est-${currentId}-${getOverrideDisplay(currentId)}`}
+                  onBlur={(e) => {
+                    const val = e.target.value.trim();
+                    if (val === "") {
+                      setTimeOverride({ meetId, teamSlug, event, athleteId: currentId as GenericId<"athletes"> });
+                    } else {
+                      const parsed = parseTime(val);
+                      if (parsed != null && parsed > 0) {
+                        setTimeOverride({ meetId, teamSlug, event, athleteId: currentId as GenericId<"athletes">, time: parsed });
+                      }
+                    }
+                  }}
+                />
+              </div>
             )}
           </div>
         );

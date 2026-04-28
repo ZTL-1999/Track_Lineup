@@ -6,8 +6,12 @@ import {
   RELAY_LEG_EVENTS,
   RELAY_LEG_LABELS,
   formatTime,
+  parseTime,
+  predictEventTime,
 } from "../events";
 import { useState } from "react";
+
+const ESTIMATE_OK_RELAY = new Set(["100 Meters", "200 Meters"]);
 
 interface AthleteWithTimes {
   _id: GenericId<"athletes">;
@@ -32,11 +36,31 @@ export function RelayBuilder({ athletes }: RelayBuilderProps) {
   const legEvents = RELAY_LEG_EVENTS[selectedRelay];
   const legLabels = RELAY_LEG_LABELS[selectedRelay];
 
+  // Local overrides for estimated times — keyed as "athleteId:event"
+  const [localOverrides, setLocalOverrides] = useState<Record<string, string>>({});
+
   const getAssignmentForLeg = (leg: number) =>
     assignments?.find((a) => a.leg === leg);
 
+  const getEffectiveTime = (
+    athlete: AthleteWithTimes,
+    event: string
+  ): { time: number; estimated: boolean } | undefined => {
+    const key = `${athlete._id}:${event}`;
+    const overrideStr = localOverrides[key];
+    if (overrideStr !== undefined) {
+      const parsed = parseTime(overrideStr);
+      if (parsed != null && parsed > 0) return { time: parsed, estimated: false };
+    }
+    const pred = predictEventTime(athlete.times, event);
+    if (!pred) return undefined;
+    // Only surface estimated results for 100m/200m (same rule as LineupEditor)
+    if (pred.estimated && !ESTIMATE_OK_RELAY.has(event)) return undefined;
+    return pred;
+  };
+
   const getAthleteTime = (athlete: AthleteWithTimes, event: string) =>
-    athlete.times.find((t) => t.event === event)?.time;
+    getEffectiveTime(athlete, event)?.time;
 
   // Calculate projected relay time
   const calculateRelayTime = () => {
@@ -88,10 +112,10 @@ export function RelayBuilder({ athletes }: RelayBuilderProps) {
   const getSortedAthletesForLeg = (legIndex: number) => {
     const event = legEvents[legIndex];
     return [...athletes]
-      .map((a) => ({
-        ...a,
-        relevantTime: getAthleteTime(a, event),
-      }))
+      .map((a) => {
+        const eff = getEffectiveTime(a, event);
+        return { ...a, relevantTime: eff?.time, isEstimated: eff?.estimated ?? false };
+      })
       .sort((a, b) => {
         if (a.relevantTime === undefined && b.relevantTime === undefined) return 0;
         if (a.relevantTime === undefined) return 1;
@@ -165,19 +189,39 @@ export function RelayBuilder({ athletes }: RelayBuilderProps) {
                   <span className="assigned-name">
                     {assignment.athlete.name}
                   </span>
-                  <span className="assigned-time">
-                    {(() => {
-                      const athlete = athletes.find(
-                        (a) => a._id === assignment.athleteId
-                      );
-                      const time = athlete
-                        ? getAthleteTime(athlete, legEvent)
-                        : undefined;
-                      return time !== undefined
-                        ? formatTime(time)
-                        : "No time";
-                    })()}
-                  </span>
+                  {(() => {
+                    const athlete = athletes.find((a) => a._id === assignment.athleteId);
+                    const eff = athlete ? getEffectiveTime(athlete, legEvent) : undefined;
+                    const overrideKey = athlete ? `${athlete._id}:${legEvent}` : "";
+                    return (
+                      <>
+                        <span className={`assigned-time${eff?.estimated ? " estimated-badge" : ""}`}>
+                          {eff ? formatTime(eff.time) + (eff.estimated ? " (est.)" : "") : "No time"}
+                        </span>
+                        {athlete && eff?.estimated && (
+                          <input
+                            type="text"
+                            className="manual-time-input estimated-input"
+                            placeholder="Override est. time"
+                            defaultValue={localOverrides[overrideKey] ?? ""}
+                            key={`${overrideKey}:${localOverrides[overrideKey] ?? ""}`}
+                            onBlur={(e) => {
+                              const val = e.target.value.trim();
+                              if (val === "") {
+                                setLocalOverrides((prev) => {
+                                  const n = { ...prev };
+                                  delete n[overrideKey];
+                                  return n;
+                                });
+                              } else {
+                                setLocalOverrides((prev) => ({ ...prev, [overrideKey]: val }));
+                              }
+                            }}
+                          />
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
               ) : (
                 <div className="leg-empty">Unassigned</div>
@@ -208,7 +252,7 @@ export function RelayBuilder({ athletes }: RelayBuilderProps) {
                       ? simulateSwap(leg, a._id)
                       : null;
                     const timeStr = a.relevantTime !== undefined
-                      ? formatTime(a.relevantTime)
+                      ? formatTime(a.relevantTime) + (a.isEstimated ? " (est.)" : "")
                       : "no time";
                     const impactStr = sim
                       ? ` (${sim.diff > 0 ? "+" : ""}${sim.diff.toFixed(2)}s)`

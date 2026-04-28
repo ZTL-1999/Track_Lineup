@@ -11,6 +11,12 @@ export const listRelayTimes = query({
         return times;
     },
 });
+export const listAllRelayTimes = query({
+    args: {},
+    handler: async (ctx) => {
+        return await ctx.db.query("relayTimes").collect();
+    },
+});
 // Upsert a single athlete + all their times for a team.
 // Called once per athlete by the import script.
 export const upsertAthlete = mutation({

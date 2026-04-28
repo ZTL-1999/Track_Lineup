@@ -69,4 +69,20 @@ export default defineSchema({
         total: v.number(),
     }).index("by_meet", ["meetId"])
         .index("by_meet_team", ["meetId", "teamSlug"]),
+    meetSimulations: defineTable({
+        meetId: v.id("meets"),
+        name: v.string(),
+        eventOverrides: v.array(v.object({
+            event: v.string(),
+            places: v.array(v.object({
+                place: v.number(),
+                athleteId: v.string(),
+                athleteName: v.string(),
+                teamSlug: v.string(),
+                value: v.number(),
+                estimated: v.boolean(),
+                points: v.number(),
+            })),
+        })),
+    }).index("by_meet", ["meetId"]),
 });
